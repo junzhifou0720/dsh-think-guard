@@ -1,0 +1,24 @@
+- insert:
+    - id: think-guard
+      name: dsh-think-guard
+      config:
+        # ── 下一轮兜底（默认生效）──
+        # A 型判据：上一轮思考里连续多少行确认句算复读
+        guardMinRun: 12
+        # 可选：折叠历史里成段的重复（默认关，改 reasoning 文本有签名校验风险）
+        collapseHistory: false
+        collapseMinRun: 20
+
+        # ── B 型判据：短句轮换（每句都不同、但每句都很短）──
+        rotationGuard: true
+        rotationTailChars: 4000       # 只看思考尾部这么长
+        rotationMinChars: 400         # 短于这个长度的思考不看
+        rotationShortShareMin: 0.35   # 极短段(<=3词)占段数比例下限
+        rotationTopShareMin: 0.5      # 最高频 5 段合计占比下限
+
+        # ── 流式实时中断 ──
+        # 先保持 false 只观测日志，确认能收到 agent/assistant-stream 再打开。
+        interruptOnLoop: false
+        interruptMinRun: 12
+        interruptCooldownMs: 120000
+        interruptMessage: '你刚才的思考陷入了连续重复，已经被中断。直接回答：不要复述、不要再写准备句、不要解释为什么被打断。'
