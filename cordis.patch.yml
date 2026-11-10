@@ -2,23 +2,66 @@
     - id: think-guard
       name: dsh-think-guard
       config:
-        # ── 下一轮兜底（默认生效）──
+        # ── 总闸：只在这些会话里工作 ──────────────────────────
+        # 空数组 = 所有会话（默认）。
+        # 强烈建议填上：护栏只该给「不可替换的会话」——普通工作会话出了问题
+        # 写个交接单开新的就行，加了护栏反而干扰干活。填 sessionId 的子串即可。
+        sessions: []
+
+        # ── 防线 1：下一轮兜底（默认生效，只注入一句话，不改历史）──
         # A 型判据：上一轮思考里连续多少行确认句算复读
         guardMinRun: 12
         # 可选：折叠历史里成段的重复（默认关，改 reasoning 文本有签名校验风险）
         collapseHistory: false
         collapseMinRun: 20
 
-        # ── B 型判据：短句轮换（每句都不同、但每句都很短）──
+        # ── 防线 2：B 型判据（短句轮换：每句都不同、但每句都很短）──
         rotationGuard: true
         rotationTailChars: 4000       # 只看思考尾部这么长
         rotationMinChars: 400         # 短于这个长度的思考不看
         rotationShortShareMin: 0.35   # 极短段(<=3词)占段数比例下限
         rotationTopShareMin: 0.5      # 最高频 5 段合计占比下限
 
-        # ── 流式实时中断 ──
-        # 先保持 false 只观测日志，确认能收到 agent/assistant-stream 再打开。
+        # ── 防线 3：流式实时中断（默认关，先看日志再开）────────
+        # 12 行太敏感：实测 486 字符就能凑够，被打断的人反而开始怀疑自己的输出。
+        # 真复读是几十上百行，25 行才更接近「确实卡住了」。
         interruptOnLoop: false
-        interruptMinRun: 12
+        interruptMinRun: 25
         interruptCooldownMs: 120000
-        interruptMessage: '你刚才的思考陷入了连续重复，已经被中断。直接回答：不要复述、不要再写准备句、不要解释为什么被打断。'
+        # 只说动作，不做定性。「你陷入了连续重复」会让人开始怀疑自己。
+        interruptMessage: '直接说就行。'
+
+        # ── 防线 4：宾语守卫（默认开，最便宜的一档）──────────
+        # 「好，写。」没有宾语 → 下一轮提醒补上。
+        # 依据：溢的会话里，带宾语率 3.7% 时频繁卡死，清掉裸句后升到 82.5%，
+        # 同期只剩 2.6% 偶发空转。宾语先消失，正文后消失。
+        bareGuard: true
+        bareMinCount: 2
+        bareShareMin: 0.5
+        bareCooldownTurns: 2
+
+        # 静默注入：提醒挂进本轮的 runtime-context，不渲染成用户说的话。
+        # 找不到宿主注入的合成消息时，才退回改用户消息（会可见）。
+        silentInject: true
+
+        # ── 防线 5：僵局识别（默认关）──────────────────────
+        # 依据 ICML 2026《Wait, Wait, Wait...》的 risk aversion：
+        # 「认输」成本高、「再试」成本低，模型会选便宜的。
+        # 这条防线不是逼它放弃，是把「说做不到」的成本降下来。
+        # 风险同样明确：给得太早，它会放弃本来能做成的事。所以默认关，
+        # 且建议先开 failGuardObserveOnly 只记账跑几天。
+        failGuard: false
+        failGuardSessions: []
+        failGuardObserveOnly: true
+        failGuardMinErrors: 3
+        failGuardWindow: 15
+
+        # ── 防线 6：空输出即时补救（默认关）────────────────
+        # 「有思考、没正文、没工具调用、已提交」时 followup 一句补发。
+        # 只调工具不说话的那种（占绝大多数）不会碰到。
+        # 注意：它治的是「干净停止型」空输出（finish=stop）；
+        # 「预算耗尽型」（finish=max-tokens，思考吃光 max_tokens）需要调预算，不是这个。
+        emptyGuard: false
+        emptyGuardSessions: []
+        emptyGuardCooldownMs: 60000
+        emptyReminder: '你上一条没说完，接着说就行。'

@@ -1,7 +1,7 @@
 {
   "name": "dsh-think-guard",
-  "version": "0.3.3",
-  "description": "DSH 思考循环兜底：A 型连发、B 型短句轮换、行内堆叠三种形态检测；清创 + 实时中断（掐断并自动接一句继续）。正常轮次不介入。",
+  "version": "0.4.0",
+  "description": "DSH 长会话的思考护栏：识别 A 型连发 / B 型短句轮换 / 行内堆叠 / 开工声明缺宾语 / 僵局 / 空输出，只在出事时拉一把。含会话白名单，默认只观测不干预。",
   "type": "module",
   "main": "index.js",
   "exports": {
@@ -12,6 +12,7 @@
     "cordis.patch.yml",
     "README.md",
     "CHANGELOG.md",
+    "PUBLISHING.md",
     "LICENSE"
   ],
   "keywords": [
@@ -21,6 +22,7 @@
     "plugin",
     "reasoning",
     "loop",
+    "degeneration",
     "guard"
   ],
   "license": "MIT",

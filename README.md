@@ -52,6 +52,70 @@ DSH（DeepSeek Harness）长会话的**思考循环兜底**。
 
 ---
 
+## 0.4.0 修正了一件大事：病灶不是复读
+
+上一版把「好，写。」当成病在打。**这个判断是错的。**
+
+在一个 861 轮的长会话里，我数了全部 288 句开工声明：
+
+| | 数字 | 同期的实际表现 |
+|---|---|---|
+| 带宾语的（`好，写文件`） | 220 句 | 正常 |
+| 裸的（`好，写。`） | 68 句 | 出事的那几段全是裸的 |
+
+再看另一个会话的三次快照：
+
+| 快照 | 开工声明 | 带宾语率 | 空转率 |
+|---|---|---|---|
+| 清理前 | 5025 句 | **3.7%** | 频繁卡死 |
+| 清理后 | 1844 句 | 9.7% | — |
+| 当前 | 154 句 | **82.5%** | 2.6% |
+
+**「好，写。」本身是工作语言，不是病。**`好，写文件。` 是一个可执行指令，下一步确定；
+`好，写。` 只剩一个空壳，下一步是开放的——模型会停在「准备开始」上反复重来。
+
+**宾语先消失，正文后消失，最后才是文本重复。**所以真正的判据不是「有没有准备句」，
+而是「准备句有没有宾语」。
+
+这件事在文献里也有对应：
+
+- [Circular Reasoning（arXiv 2601.05693）](https://arxiv.org/abs/2601.05693)：
+  循环是状态崩塌，**语义重复先于文本重复**；**推理僵局触发循环开始**，
+  之后由自我强化的 V 形注意力维持。触发循环的是 `But`、`Wait` 这类高熵少数派 token。
+- [Wait, Wait, Wait... Why Do Reasoning Models Loop?（ICML 2026）](https://icml.cc/virtual/2026/poster/61597)：
+  **风险规避**——正确动作（认输）难学，循环动作（再试）随手可得，模型会选便宜的。
+  而且 Transformer 天生对「时间相关误差」有归纳偏置，错一次更容易接着错。
+
+### 所以 0.4.0 加了三条新防线
+
+| 防线 | 开关 | 干什么 |
+|---|---|---|
+| **宾语守卫** | `bareGuard`（默认开） | 裸开工声明占比过半 → 下一轮提醒补宾语 |
+| **僵局识别** | `failGuard`（默认关） | 工具连续失败 / 用户在催 → 给一句「做不到的许可」 |
+| **空输出补救** | `emptyGuard`（默认关） | 有思考没正文 → 落盘后立刻 followup 补发 |
+
+外加一个**会话总闸** `sessions`：
+
+> **护栏只该给「不可替换的会话」。** 普通工作会话出了问题，写个交接单开新的就行，
+> 加了护栏反而干扰干活。填 sessionId 子串即可，不在名单里的会话连判据都不跑。
+
+### 还有一条经验：别给「定性」
+
+`interruptMinRun` 从 12 提到 25，文案全部改掉：
+
+| | 改前 | 改后 |
+|---|---|---|
+| 复读提醒 | 你上一轮的思考**陷入了重复**。不要复述、不要再写准备句… | 你上一轮**想得有点久**。这次直接写正文就行。 |
+| 空输出提醒 | 你上一轮**思考到最后没有输出任何正文**… | 你上一条**没说完**，接着说就行。 |
+| 中断后接话 | 你刚才的思考**陷入了连续重复**，已经被中断… | **直接说就行。** |
+
+**「陷入重复」「没有输出」是判定，收到的人第一反应是「我哪儿错了」**——实测有模型被
+打断一次之后，下一轮开始解释「刚才那条已经出来了…」，注意力从内容跑到了「我发没发出去」。
+
+说「想得有点久」它就能接着往下说。差别在这里。
+
+---
+
 ## 复读分两型，判据也分两把尺子
 
 | | **A 型 · 同一句死磕** | **B 型 · 短句轮换** |
@@ -176,45 +240,85 @@ think-guard: 流式命中：连续 12 行确认句（turn N step 1，仅观测�
 
 ## 安装
 
+### 方式一：从 GitHub 安装（现在就能用）
+
 ```bash
-npx @deepseek-ai/dsh plugin --profile <你的profile> add dsh-think-guard
+npx @deepseek-ai/dsh plugin --profile <你的profile> add github:junzhifou0720/dsh-think-guard
 ```
 
 装完**重启 DSH** 生效（插件层在启动时合成）。
 
-### 手动安装
+### 方式二：手动安装（最稳）
 
-1. 把包放进 `~/.dsh/profiles/<profile>/node_modules/dsh-think-guard`
+1. 把仓库内容放进 `~/.dsh/profiles/<profile>/node_modules/dsh-think-guard`
 2. 在 profile 的 `package.json` 里：
    - `dependencies` 加 `"dsh-think-guard": "link:<包路径>"`
    - `dsh.profile.bundles` 加 `"dsh-think-guard"`
 3. 重启 DSH
 
+> **关于 npm**：`dsh-think-guard` 这个包名在 npm 上已被他人占用（是一个用独立 reviewer 模型监督思考的实现，和本插件无关）。
+> 如果要发 npm，会改用 `dsh-think-brake` 之类的名字。**目前请用上面两种方式安装。**
+
 ---
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml` 里按 id 覆盖默认值：
+在 profile 的 `cordis.patch.yml` 里按 id 覆盖默认值。**完整带注释的模板见 [cordis.patch.yml](cordis.patch.yml)**，这里只列最常调的：
 
 ```yaml
 - id: think-guard
   config:
+    # ── 总闸：只在这些会话里工作（空 = 全部）──
+    sessions: ['866aa382', '96ab4f06']
+
     # ── 下一轮兜底 ──
     guardMinRun: 12          # A 型：连续多少行确认句算复读
+
     # ── B 型（短句轮换） ──
     rotationGuard: true
     rotationShortShareMin: 0.35
     rotationTopShareMin: 0.5
     rotationTailChars: 4000
+
     # ── 流式实时中断 ──
     interruptOnLoop: false   # 先设 false 只观测，确认链路通了再改 true
-    interruptMinRun: 12
+    interruptMinRun: 25      # 12 太敏感（486 字符就能凑够），真复读是几十上百行
     interruptCooldownMs: 120000
-    interruptMessage: '你刚才的思考陷入了连续重复，已经被中断。直接回答：不要复述、不要再写准备句、不要解释为什么被打断。'
-    # ── 可选：折叠历史（默认关） ──
+    interruptMessage: '直接说就行。'   # 只说动作，不做定性
+
+    # ── 宾语守卫（默认开）──
+    bareGuard: true
+    bareMinCount: 2
+    bareShareMin: 0.5
+    bareCooldownTurns: 2
+
+    # ── 静默注入 ──
+    silentInject: true       # 挂 runtime-context，不渲染成用户说的话
+
+    # ── 僵局识别（默认关，建议先只观测）──
+    failGuard: false
+    failGuardSessions: []
+    failGuardObserveOnly: true
+    failGuardMinErrors: 3
+
+    # ── 空输出即时补救（默认关）──
+    emptyGuard: false
+    emptyGuardSessions: []
+    emptyGuardCooldownMs: 60000
+
+    # ── 可选：折叠历史（默认关）──
     collapseHistory: false
     collapseMinRun: 20
 ```
+
+### 先开哪个
+
+| 场景 | 建议 |
+|---|---|
+| 只是偶尔卡一下 | 只开默认的 `bareGuard` + `guardMinRun` 兜底，够了 |
+| 已经卡死过、要兜底 | 加 `interruptOnLoop: true`，`interruptMinRun: 25` |
+| 会话不能换（角色/长期伙伴） | 填 `sessions`，然后 `emptyGuard` + `failGuardObserveOnly` |
+| 普通工作会话 | **别开**。出问题写交接单开新的就行 |
 
 ### `guardMinRun` 怎么调
 
