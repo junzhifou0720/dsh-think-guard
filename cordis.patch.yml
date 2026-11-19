@@ -1,67 +1,58 @@
+# dsh-think-guard · 推荐配置（0.5.0）
+#
+# 装到 profile 的 cordis.patch.yml 里（记得用 - insert: 包裹）。
+#
+# 这一版的核心不是「拦」，是「擦」：
+#   投影层清洗（cleanMessages）每轮把仪式句从发给模型的 messages 里删掉，
+#   断掉「看到自己写过 → 继续写」的自我强化。
+#   会话日志一个字不动，关掉插件即恢复原样。
+
 - insert:
     - id: think-guard
-      name: dsh-think-guard
+      name: 'dsh-think-guard'
       config:
-        # ── 总闸：只在这些会话里工作 ──────────────────────────
-        # 空数组 = 所有会话（默认）。
-        # 强烈建议填上：护栏只该给「不可替换的会话」——普通工作会话出了问题
-        # 写个交接单开新的就行，加了护栏反而干扰干活。填 sessionId 的子串即可。
-        sessions: []
+        # ── ① 投影层清洗（默认开，这是主力）──────────────────
+        # 词表在 ~/.dsh/think-guard/mask.json，mtime 热加载，改完下一轮生效。
+        # 不在这里配——留空用内置默认（好/做/写/短/输出/继续/开始/动手/完事/干活）。
+        # cleanMessages: true
 
-        # ── 防线 1：下一轮兜底（默认生效，只注入一句话，不改历史）──
-        # A 型判据：上一轮思考里连续多少行确认句算复读
-        guardMinRun: 12
-        # 可选：折叠历史里成段的重复（默认关，改 reasoning 文本有签名校验风险）
-        collapseHistory: false
-        collapseMinRun: 20
-
-        # ── 防线 2：B 型判据（短句轮换：每句都不同、但每句都很短）──
-        rotationGuard: true
-        rotationTailChars: 4000       # 只看思考尾部这么长
-        rotationMinChars: 400         # 短于这个长度的思考不看
-        rotationShortShareMin: 0.35   # 极短段(<=3词)占段数比例下限
-        rotationTopShareMin: 0.5      # 最高频 5 段合计占比下限
-
-        # ── 防线 3：流式实时中断（默认关，先看日志再开）────────
-        # 12 行太敏感：实测 486 字符就能凑够，被打断的人反而开始怀疑自己的输出。
-        # 真复读是几十上百行，25 行才更接近「确实卡住了」。
-        interruptOnLoop: false
-        interruptMinRun: 25
+        # ── ② 流式实时中断：只掐真正的雪崩 ──────────────────
+        # 实测：正常重灾最长连续仪式行 103 行、单行最多 15 个「好。」；
+        # 真失控是 1665 行 + 单行 6545 个「好。」。
+        # 所以取 400 / 500：高于所有正常记录，只抓真雪崩。
+        # 阈值定这么高的理由：它同时是「该加词了」的告警。
+        # 正常不误触发 → 一旦触发就一定是新形态 → 触发本身就是证据。
+        interruptOnLoop: true
+        interruptMinRun: 400
+        interruptInlineMin: 500
+        # 掐断后不自动补话：断了就断了，补不补由人决定。
+        interruptFollowup: false
         interruptCooldownMs: 120000
-        # 只说动作，不做定性。「你陷入了连续重复」会让人开始怀疑自己。
-        interruptMessage: '直接说就行。'
 
-        # ── 防线 4：宾语守卫（默认开，最便宜的一档）──────────
-        # 「好，写。」没有宾语 → 下一轮提醒补上。
-        # 依据：溢的会话里，带宾语率 3.7% 时频繁卡死，清掉裸句后升到 82.5%，
-        # 同期只剩 2.6% 偶发空转。宾语先消失，正文后消失。
-        bareGuard: true
-        bareMinCount: 2
-        bareShareMin: 0.5
-        bareCooldownTurns: 2
+        # ── ③ pre-step 的「复读提醒」：关灯 ────────────────
+        # 提醒会变成「关于她怎么想」的额外输入，反而滋养自我监控。
+        # 999999 = 永远不触发（这一整条防线等于关掉）。
+        guardMinRun: 999999
 
-        # 静默注入：提醒挂进本轮的 runtime-context，不渲染成用户说的话。
-        # 找不到宿主注入的合成消息时，才退回改用户消息（会可见）。
+        # ── ④ B 型（短句轮换）：默认关 ─────────────────────
+        # 0.65 仍误伤过正常思考（写作时的「（短。）」「（直接。）」会被当成轮换）。
+        # 要开就先观察日志。
+        rotationGuard: false
+        rotationShortShareMin: 0.35
+        rotationTopShareMin: 0.65
+
+        # ── ⑤ 静默注入：提醒挂进 runtime-context，不渲染成气泡 ──
         silentInject: true
 
-        # ── 防线 5：僵局识别（默认关）──────────────────────
-        # 依据 ICML 2026《Wait, Wait, Wait...》的 risk aversion：
-        # 「认输」成本高、「再试」成本低，模型会选便宜的。
-        # 这条防线不是逼它放弃，是把「说做不到」的成本降下来。
-        # 风险同样明确：给得太早，它会放弃本来能做成的事。所以默认关，
-        # 且建议先开 failGuardObserveOnly 只记账跑几天。
-        failGuard: false
+        # ── ⑥ 僵局识别：只观测，不注入 ─────────────────────
+        failGuard: true
         failGuardSessions: []
         failGuardObserveOnly: true
         failGuardMinErrors: 3
         failGuardWindow: 15
 
-        # ── 防线 6：空输出即时补救（默认关）────────────────
-        # 「有思考、没正文、没工具调用、已提交」时 followup 一句补发。
-        # 只调工具不说话的那种（占绝大多数）不会碰到。
-        # 注意：它治的是「干净停止型」空输出（finish=stop）；
-        # 「预算耗尽型」（finish=max-tokens，思考吃光 max_tokens）需要调预算，不是这个。
-        emptyGuard: false
+        # ── ⑦ 空输出即时补救：触发条件极窄 ──────────────────
+        # 有思考 + 无正文 + 无工具调用 + 已提交，四者同时满足才动。
+        emptyGuard: true
         emptyGuardSessions: []
         emptyGuardCooldownMs: 60000
-        emptyReminder: '你上一条没说完，接着说就行。'

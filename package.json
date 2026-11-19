@@ -1,14 +1,16 @@
 {
   "name": "dsh-think-guard",
-  "version": "0.4.0",
-  "description": "DSH 长会话的思考护栏：识别 A 型连发 / B 型短句轮换 / 行内堆叠 / 开工声明缺宾语 / 僵局 / 空输出，只在出事时拉一把。含会话白名单，默认只观测不干预。",
+  "version": "0.5.0",
+  "description": "DSH 长会话的思考护栏 + 投影层清洗：按词表把仪式句从每轮注入里删掉（断掉自我强化），只掐真正失控的超长思考，并在自动压缩后提醒手动清创。不改会话日志，关掉即恢复。",
   "type": "module",
   "main": "index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./client": "./client.js"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "README.md",
     "CHANGELOG.md",
@@ -23,7 +25,9 @@
     "reasoning",
     "loop",
     "degeneration",
-    "guard"
+    "guard",
+    "context-projection",
+    "compaction"
   ],
   "license": "MIT",
   "engines": {
@@ -32,6 +36,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
   }
 }

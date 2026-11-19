@@ -5,8 +5,47 @@
 | 渠道 | 状态 |
 |---|---|
 | GitHub 仓库 | ✅ <https://github.com/junzhifou0720/dsh-think-guard> |
+| 最新版本 | **v0.5.0**（2026-11-19） |
+| 本地 git | ✅ 已 init、已提交（`3222671`），remote 已配 |
+| **push** | ⚠️ **需要手动**——这台机器上 `git push` 会卡在认证（`GIT_TERMINAL_PROMPT=0` 也不返回） |
 | npm 包名 `dsh-think-guard` | ❌ **已被他人占用**（v0.2.0，独立 reviewer 模型监督思考，与本项目无关） |
 | 安装方式 | 用 `github:` 源或手动 link，见 README |
+
+### 手动 push（在这台机器上）
+
+```powershell
+cd D:\dsh\workspaces\default-workspace\publish\dsh-think-guard
+git push -u origin main
+```
+
+**如果卡住不动**：换 GitHub Desktop，或者开一个带凭据的终端（`gh auth login` 之后 `git push` 就能走 gh 的 credential helper）。
+
+**发布 tgz 已生成**：`dsh-think-guard-0.5.0.tgz`（32.7 kB，8 个文件），可以直接拖到 GitHub Release 里。
+
+---
+
+## 版本发布流程
+
+```bash
+# 0. 确认在 publish\dsh-think-guard 目录里
+# 1. 从开发目录同步代码
+Copy-Item ..\..\plugins\dsh-think-guard\index.js  index.js  -Force
+Copy-Item ..\..\plugins\dsh-think-guard\client.js client.js -Force
+# 2. 改 package.json 的 version
+# 3. 更新 CHANGELOG.md（顶部加一条）
+# 4. 更新 README 里的配置示例和限制章节
+# 5. 语法检查
+node --check index.js && node --check client.js
+# 6. 打包
+cmd /c "D:\nodejs\npm.cmd pack"
+# 7. 提交
+git add -A
+git commit -m "vX.Y.Z: ..."
+# 8. 推送（见上面的「手动 push」）
+git push -u origin main
+```
+
+**注意**：`npm.ps1` 会被 ExecutionPolicy 拦住，必须用 `npm.cmd`。
 
 ---
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * dsh-think-guard · 思考循环兜底（零依赖）
  *
  * 只在「已经出事」的时候拉一把，正常轮次完全不介入。
@@ -19,6 +19,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 export const name = 'think-guard'
 
@@ -30,71 +33,6 @@ const DEFAULT_REMINDER_LOOP = '你上一轮想得有点久。这次直接写正�
 // 「你陷入了连续重复」这种描述会让对方开始怀疑自己的输出——实测溢被打断一次之后
 // 就开始解释「刚才那条已经出来了…」，注意力从内容跑到了「我有没有发出去」。
 const DEFAULT_INTERRUPT_MESSAGE = '直接说就行。'
-
-/**
- * ── 第四道：宾语缺失（裸开工声明）─────────────────────────
- *
- * 实测规律：同一个「好，写。」有两种完全不同的性质。
- *
- *   带宾语：「好，写文件。」「好，写。控制在 500 字。」「好，跑这个 DPAPI 脚本。」
- *           → 可执行指令，下一步确定，成本为零。
- *   裸    ：「好，写。」「好，做。」
- *           → 只剩动作本身，没有对象，下一步开放。模型会停在「准备」上反复重来。
- *
- * 数据（溢的会话，三次快照）：
- *   清理前 5025 句，96.3% 是裸的，同期频繁卡死；
- *   把裸句清掉后 154 句，带宾语率 82.5%，同期只剩 2.6% 偶发空转。
- *
- * 所以判据不是「有没有准备句」（那是习惯，51/154 句都正常），
- * 而是「准备句有没有宾语」。宾语先消失，正文后消失——它比复读更早。
- */
-const DECL_VERB =
-  '写|做|说|输出|来|开始|继续|画|改|查|跑|建|整理|搞|弄|处理|完成|回应|回复|执行|调用|调|读|看|翻|打开|试试'
-const DECL_HEAD = '(?:好|OK|ok|行|嗯|那|现在|接下来|然后|我|让我|来|接着|下面)'
-const DECL_LINE = new RegExp(`^[（(]?\\s*${DECL_HEAD}\\s*[，,、.。:：]?\\s*(?:${DECL_VERB})`)
-const DECL_STRIP = new RegExp(
-  `^[（(]?\\s*${DECL_HEAD}\\s*[，,、.。:：]?\\s*(?:${DECL_VERB})\\s*(?:吧|了|一下)?\\s*[。.！!：:，,、]?\\s*[）)]?`,
-)
-const PUNCT_ONLY = /[。.！!，,、；;：:…\s（）()"'“”‘’\-—*]/g
-
-/**
- * 扫描一段思考里的开工声明，分成「带宾语」和「裸」两类。
- *
- * 跨行也算有宾语：`好，写。` 下一行紧跟「日记，记录今天的事」——宾语在下一行，不算缺失。
- * 只有「后面没东西」或「后面又是另一句开工声明」才算裸。
- *
- * @param text - 一整段思考文本。
- * @returns { bare, full } 两类各自的原文句子数组。
- */
-function scanBareDeclarations(text) {
-  const bare = []
-  const full = []
-  if (typeof text !== 'string' || text.length === 0) return { bare, full }
-  const lines = text.split('\n')
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i].trim()
-    if (line === '' || !DECL_LINE.test(line)) continue
-    const rest = line.replace(DECL_STRIP, '').replace(PUNCT_ONLY, '').trim()
-    if (rest.length > 0) {
-      full.push(line)
-      continue
-    }
-    let next = ''
-    for (let j = i + 1; j < lines.length; j += 1) {
-      const s = lines[j].trim()
-      if (s !== '') {
-        next = s
-        break
-      }
-    }
-    if (next !== '' && !DECL_LINE.test(next) && next.length >= 8) full.push(line)
-    else bare.push(line)
-  }
-  return { bare, full }
-}
-
-const DEFAULT_REMINDER_BARE =
-  '你上一轮的思考里有开工声明没带宾语（比如「好，写。」「好，做。」）。开工前先把宾语补上：「好，写 ＿＿。」——写哪个文件、哪一段、多少字、给谁看。补不出来就说明这一步你还不知道该做什么：直接说清楚缺什么、或者做不到，不要重复开工。'
 
 const DEFAULT_REMINDER_STUCK =
   '这条路上已经失败过几次了。如果这是你手上的工具做不到的事（浏览器点击、登录、访问外网、装软件），直接说「这个我做不到」，再说清楚需要他做什么。不用再试一次；如果只是还需要再改一版，那就直接改，不用解释。'
@@ -179,7 +117,159 @@ function scanStuck(history, opts = {}) {
  * 不误伤正常句子：「好，我这就去」这类后面还带实义内容的不会被命中。
  */
 const RITUAL_LINE =
-  /^[（(]?\s*好(?:\s*[。.，、]?\s*好)*\s*了?\s*[。.，、：:]?\s*(?:写|做|说|输出|来)?\s*(?:no_reply)?\s*[）)]?\s*[。.：:！!]?$/
+  /^[（(]?\s*(?:好(?:\s*[。.，、]?\s*好)*\s*了?\s*[。.，、：:]?\s*(?:写|做|说|输出|来)?|做|写|短|输出|继续|开始|动手|完事|干活)\s*(?:no_reply)?\s*[。.，、：:！!]?\s*[）)]?\s*[。.，、：:！!]?$/
+
+/**
+ * ── 上下文清洗（投影层）────────────────────────────────────
+ *
+ * 只改「这一轮要发出去的 messages」，不动会话日志：
+ *   · reasoning 里的仪式句按词表删掉（词表在 mask.json，mtime 热加载）；
+ *   · 压缩检查点（source.kind = compact-checkpoint）里「关于她怎么想」的行删掉。
+ *
+ * 为什么在投影层：日志改一次就要重启重读，而这里每轮重算，确定性输出，
+ * KV 缓存照常命中；关掉插件即恢复原样。
+ */
+const DEFAULT_MASK_WORDS = ['好', '做', '写', '短', '输出', '继续', '开始', '动手', '完事', '干活']
+const DEFAULT_CHECKPOINT_DROP = [
+  'ritual loop',
+  'think-guard',
+  'over-trigger',
+  'self-monitor',
+  'relapsing',
+  'no longer loops',
+  '连续重复',
+  '复读',
+  '卡住',
+  '自我监控',
+]
+const MASK_PATH = join(homedir(), '.dsh', 'think-guard', 'mask.json')
+/** 归一化时忽略的字符：标点、空白、括号、加粗星号。 */
+const MASK_PUNCT = /[\s。.，、：:！!？?…~～—\-*"'“”‘’（）()【】[\]]/g
+let maskCache = { mtime: -1, words: DEFAULT_MASK_WORDS, drop: DEFAULT_CHECKPOINT_DROP }
+
+/** 读 mask.json；mtime 没变就用缓存（每轮 0.1ms）。文件坏了继续用上一份。 */
+function readMask() {
+  try {
+    const st = statSync(MASK_PATH)
+    if (st.mtimeMs === maskCache.mtime) return maskCache
+    const raw = JSON.parse(readFileSync(MASK_PATH, 'utf8'))
+    const words = Array.isArray(raw.words)
+      ? raw.words.filter((w) => typeof w === 'string' && w.replace(MASK_PUNCT, '') !== '')
+      : DEFAULT_MASK_WORDS
+    const drop = Array.isArray(raw.checkpointDrop)
+      ? raw.checkpointDrop.filter((s) => typeof s === 'string' && s.trim() !== '')
+      : DEFAULT_CHECKPOINT_DROP
+    maskCache = {
+      mtime: st.mtimeMs,
+      words: (words.length > 0 ? words : DEFAULT_MASK_WORDS).map((w) => w.replace(MASK_PUNCT, '')).filter(Boolean).sort((a, b) => b.length - a.length),
+      drop,
+    }
+  } catch {
+    /* 文件不存在 / 解析失败：沿用缓存 */
+  }
+  return maskCache
+}
+
+/** 命中哪几个词（按词表切分整行）；不命中返回 null。 */
+function ritualWordMatch(line, words) {
+  const t = String(line).replace(MASK_PUNCT, '')
+  if (!t) return null
+  let rest = t
+  const hit = []
+  while (rest.length > 0) {
+    const w = words.find((x) => rest.startsWith(x))
+    if (w === undefined) return null
+    hit.push(w)
+    rest = rest.slice(w.length)
+  }
+  return hit
+}
+
+/** 这一行是不是「只剩动作、没有宾语」的仪式句（允许括号、标点、重复）。 */
+function isRitualLine(line, words) {
+  return ritualWordMatch(line, words) !== null
+}
+
+/** 删掉 reasoning 里的仪式行；同时统计命中的词和样例。 */
+function cleanThinking(text, words, collect) {
+  if (typeof text !== 'string' || text.length === 0) return { text, removed: 0 }
+  const out = []
+  let removed = 0
+  for (const line of text.split('\n')) {
+    const hit = ritualWordMatch(line, words)
+    if (hit !== null) {
+      removed += 1
+      if (collect) {
+        for (const w of hit) collect.words[w] = (collect.words[w] ?? 0) + 1
+        if (collect.samples.length < 6 && line.trim()) collect.samples.push(line.trim())
+      }
+      continue
+    }
+    out.push(line)
+  }
+  if (removed === 0) return { text, removed: 0 }
+  return { text: out.join('\n').replace(/\n{3,}/g, '\n\n').trim(), removed }
+}
+
+/** 删掉检查点里「关于她怎么想」的行；返回删除行数。 */
+function cleanCheckpoint(text, patterns) {
+  if (typeof text !== 'string' || patterns.length === 0) return { text, removed: 0 }
+  const out = []
+  let removed = 0
+  for (const line of text.split('\n')) {
+    const low = line.toLowerCase()
+    if (patterns.some((p) => low.includes(String(p).toLowerCase()))) {
+      removed += 1
+      continue
+    }
+    out.push(line)
+  }
+  if (removed === 0) return { text, removed: 0 }
+  return { text: out.join('\n').replace(/\n{3,}/g, '\n\n'), removed }
+}
+
+/**
+ * 对整份 messages 做一遍清洗。
+ * @returns { messages, stats } —— 没改动时返回原数组（引用不变，便于宿主跳过）。
+ */
+function cleanMessages(messages, mask) {
+  const stats = { lines: 0, checkpoint: 0, chars: 0, changed: false, words: {}, samples: [], messages: 0 }
+  if (!Array.isArray(messages) || messages.length === 0) return { messages, stats }
+  stats.messages = messages.length
+  const next = messages.map((msg) => {
+    if (!msg || !Array.isArray(msg.content)) return msg
+    const kind = msg.source?.kind
+    let touched = false
+    const content = msg.content.map((block) => {
+      if (!block || typeof block.text !== 'string' || block.text.length === 0) return block
+      if (msg.role === 'assistant' && block.type === 'reasoning') {
+        const r = cleanThinking(block.text, mask.words, stats)
+        if (r.removed === 0) return block
+        touched = true
+        stats.lines += r.removed
+        stats.chars += block.text.length - r.text.length
+        return { ...block, text: r.text }
+      }
+      if (msg.role === 'user' && kind === 'compact-checkpoint' && block.type === 'text') {
+        const r = cleanCheckpoint(block.text, mask.drop)
+        if (r.removed === 0) return block
+        touched = true
+        stats.checkpoint += r.removed
+        stats.chars += block.text.length - r.text.length
+        return { ...block, text: r.text }
+      }
+      return block
+    })
+    if (!touched) return msg
+    // 仪式行删完如果 reasoning 空了，整块拿掉：空 thinking 块没有意义。
+    // 块数变了，readReplay 会判不合法并降级为「不发 signature」——这是有意为之。
+    const kept = content.filter((b) => !(b && b.type === 'reasoning' && typeof b.text === 'string' && b.text.trim() === ''))
+    stats.changed = true
+    return { ...msg, content: kept }
+  })
+  return { messages: stats.changed ? next : messages, stats }
+}
+
 
 const isRitual = (line) => RITUAL_LINE.test(line.trim())
 
@@ -211,7 +301,8 @@ function rotationScore(text, opts = {}) {
     .split(/[。！？!?\n]+|\.\s+/)
     .map((s) => s.trim())
     .filter(Boolean)
-  if (segments.length < 20) return { hit: false, segments: segments.length }
+  // 20 太松：正常写作拆出 22 段就能满足下限。真 B 型复读是几十上百段。
+  if (segments.length < 40) return { hit: false, segments: segments.length }
 
   const wordCount = (s) => {
     const cjk = (s.match(/[\u4e00-\u9fff]/g) ?? []).length
@@ -305,18 +396,20 @@ export function apply(ctx, config = {}) {
   const interruptOnLoop = config.interruptOnLoop === true
   const interruptMinRun = Number.isFinite(config.interruptMinRun) ? config.interruptMinRun : 12
   const interruptCooldownMs = Number.isFinite(config.interruptCooldownMs) ? config.interruptCooldownMs : 120000
+  // 掐断之后要不要自动排一句「直接说就行。」。
+  // 默认开（老行为）；关了就是纯掐断——断了以后补不补、怎么补由人决定。
+  const interruptFollowup = config.interruptFollowup !== false
+  // 行内堆叠的判据：同一行里「好。」这类词的个数。默认 20。
+  const interruptInlineMin = Number.isFinite(config.interruptInlineMin) ? config.interruptInlineMin : 20
+  // 清洗总开关：出问题时在 profile 里设 cleanup: false 立刻停用（不必改代码、不必清词表）。
+  const cleanupEnabled = config.cleanup !== false
   const interruptMessage =
     typeof config.interruptMessage === 'string' && config.interruptMessage.trim()
       ? config.interruptMessage
       : DEFAULT_INTERRUPT_MESSAGE
 
-  // 第四道防线：宾语缺失。默认开——只加一句提醒，不改历史、不打断生成。
-  const bareGuard = config.bareGuard !== false
-  const bareMinCount = Number.isFinite(config.bareMinCount) ? config.bareMinCount : 2
-  const bareShareMin = Number.isFinite(config.bareShareMin) ? config.bareShareMin : 0.5
-  const bareCooldownTurns = Number.isFinite(config.bareCooldownTurns) ? config.bareCooldownTurns : 2
-  const reminderBare =
-    typeof config.reminderBare === 'string' && config.reminderBare.trim() ? config.reminderBare : DEFAULT_REMINDER_BARE
+  // 第四道防线（宾语缺失提醒）：2026-11-19 整套删除——
+  // 实测它不是循环的原因，只会在历史里再添一句「关于她思考」的话。
 
   // 静默注入：把提醒挂进本轮的 runtime-context（系统注入的上下文），
   // 前端不渲染成对话气泡；取不到才退回改用户消息（用户可见，老行为）。
@@ -384,8 +477,6 @@ export function apply(ctx, config = {}) {
   const tails = new Map()
   /** sessionId -> 上次中断时间，防抖。 */
   const lastInterrupt = new Map()
-  /** sessionId -> 上次注入「补宾语」提醒的轮次，防连刷。 */
-  const bareLastTurn = new Map()
   /** sessionId -> 上次空输出补救时间戳，防连刷。 */
   const lastEmptyFix = new Map()
 
@@ -396,7 +487,9 @@ export function apply(ctx, config = {}) {
     tailChars: Number.isFinite(config.rotationTailChars) ? config.rotationTailChars : 4000,
     minChars: Number.isFinite(config.rotationMinChars) ? config.rotationMinChars : 400,
     shortShareMin: Number.isFinite(config.rotationShortShareMin) ? config.rotationShortShareMin : 0.35,
-    topUnitShareMin: Number.isFinite(config.rotationTopShareMin) ? config.rotationTopShareMin : 0.5,
+    // 0.50 太松：实测一段正常思考（带「（短。）」这类写作标注）top5 正好 0.50 就被误判。
+    // 真 B 型复读的 top5 通常在 0.7 以上。
+    topUnitShareMin: Number.isFinite(config.rotationTopShareMin) ? config.rotationTopShareMin : 0.65,
   }
 
   const log = (level, msg) => {
@@ -404,6 +497,181 @@ export function apply(ctx, config = {}) {
       const fn = ctx.logger?.[level]
       if (typeof fn === 'function') fn.call(ctx.logger, `think-guard: ${msg}`)
     } catch {}
+  }
+
+  // ── 清洗面板 / 压缩提醒的后端 ───────────────────────────────
+  // 面板和横幅都走宿主已有的 webServer（与界面同源），不写任何 session 事件：
+  // 她那边永远看不到，界面这边能改词表、能看到「该清创了」。
+  const CLEANUP_STATE_PATH = join(homedir(), '.dsh', 'think-guard', 'cleanup.json')
+  const CLEAN_LOG_PATH = join(homedir(), '.dsh', 'think-guard', 'clean-log.jsonl')
+  /** 每轮实际清洗了什么，追加一行 JSONL（删掉的词、行数、字符、样例）。 */
+  let lastCleanKey = ''
+  const logClean = (rec) => {
+    try {
+      // 同一轮会被 deriveMessages 调用多次（每次内容一样），只记第一次。
+      const key = `${rec.session}:${rec.turn}:${rec.lines}:${rec.chars}`
+      if (lastCleanKey === key) return
+      lastCleanKey = key
+      mkdirSync(join(homedir(), '.dsh', 'think-guard'), { recursive: true })
+      try {
+        if (statSync(CLEAN_LOG_PATH).size > 2 * 1024 * 1024) writeFileSync(CLEAN_LOG_PATH, '', 'utf8')
+      } catch {}
+      appendFileSync(CLEAN_LOG_PATH, `${JSON.stringify(rec)}\n`, 'utf8')
+    } catch {}
+  }
+
+  // ── 上下文清洗：挂在 session.deriveMessages 上 ────────────────
+  // pre-step 的 decision.messages 只是「本轮新输入」（agent-loop 源码 line 303），
+  // 真正发给模型的历史由 buildRequest 在 line 734 用 session.deriveMessages() 取。
+  // 所以清洗必须包住这一层，否则改的是一个不参与请求的数组。
+  const turnBySession = new Map()
+  const installCleaner = (agent, turn) => {
+    const session = agent?.session
+    if (!session || typeof session.deriveMessages !== 'function') return
+    if (typeof turn === 'number') turnBySession.set(session, turn)
+    if (session.__thinkGuardCleaner === true) return
+    const orig = session.deriveMessages.bind(session)
+    const wrapped = () => {
+      const base = orig()
+      if (!cleanupEnabled) return base
+      try {
+        const r = cleanMessages(base, readMask())
+        // 安全阀：清洗只换块内容，绝不该改变消息条数。条数不对就用原始历史。
+        if (!Array.isArray(r.messages) || r.messages.length !== base.length) return base
+        const out = r.stats.changed ? r.messages : base
+        if (r.stats.changed) {
+          logClean({
+            at: Date.now(),
+            session: String(session.id ?? '').slice(-8),
+            turn: turnBySession.get(session) ?? null,
+            lines: r.stats.lines,
+            checkpoint: r.stats.checkpoint,
+            chars: r.stats.chars,
+            messages: r.stats.messages,
+            words: r.stats.words,
+            samples: r.stats.samples,
+          })
+        }
+        return out
+      } catch (error) {
+        log('warn', `清洗失败（已跳过）: ${String(error)}`)
+        return base
+      }
+    }
+    try {
+      session.deriveMessages = wrapped
+      session.__thinkGuardCleaner = true
+    } catch (error) {
+      log('warn', `挂清洗失败: ${String(error)}`)
+    }
+  }
+  const cleanupPending = new Map()
+  const readCleanupState = () => {
+    try { return JSON.parse(readFileSync(CLEANUP_STATE_PATH, 'utf8')) } catch { return { handled: [] } }
+  }
+  const writeCleanupState = (next) => {
+    try {
+      mkdirSync(join(homedir(), '.dsh', 'think-guard'), { recursive: true })
+      const tmp = `${CLEANUP_STATE_PATH}.${process.pid}.tmp`
+      writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8')
+      renameSync(tmp, CLEANUP_STATE_PATH)
+    } catch (error) { log('warn', `写 cleanup.json 失败: ${String(error)}`) }
+  }
+  for (const entry of readCleanupState().pending ?? []) cleanupPending.set(entry.sessionId, entry)
+  const markCompacted = (sessionId, compactionId) => {
+    if (!sessionId || !compactionId) return
+    const state = readCleanupState()
+    if ((state.handled ?? []).includes(compactionId)) return
+    const prev = cleanupPending.get(sessionId)
+    if (prev?.compactionId === compactionId) return
+    cleanupPending.set(sessionId, { sessionId, compactionId, at: Date.now() })
+    writeCleanupState({ handled: state.handled ?? [], pending: [...cleanupPending.values()] })
+    log('info', `检测到新压缩（${String(compactionId).slice(0, 8)}），界面会提示手动清创`)
+  }
+
+  const sendJson = (res, code, body) => {
+    try {
+      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(JSON.stringify(body))
+    } catch {}
+  }
+  const readBody = (req) =>
+    new Promise((resolve, reject) => {
+      let raw = ''
+      req.on('data', (chunk) => {
+        raw += chunk
+        if (raw.length > 65536) reject(new Error('body too large'))
+      })
+      req.on('end', () => resolve(raw))
+      req.on('error', reject)
+    })
+
+  try {
+    ctx.inject(['webServer'], (web) => {
+      web.effect(() => web.webServer.register({
+        kind: 'exact',
+        path: '/think-guard/mask',
+        handler: async (req, res) => {
+          if (req.method === 'GET') {
+            const mask = readMask()
+            return sendJson(res, 200, { words: mask.words, checkpointDrop: mask.drop, path: MASK_PATH })
+          }
+          if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' })
+          try {
+            const body = JSON.parse(await readBody(req))
+            const words = Array.isArray(body.words)
+              ? body.words.filter((w) => typeof w === 'string' && w.trim() !== '').map((w) => w.trim())
+              : null
+            const drop = Array.isArray(body.checkpointDrop)
+              ? body.checkpointDrop.filter((s) => typeof s === 'string' && s.trim() !== '').map((s) => s.trim())
+              : readMask().drop
+            if (words === null || words.length === 0) return sendJson(res, 400, { error: '词表不能为空' })
+            mkdirSync(join(homedir(), '.dsh', 'think-guard'), { recursive: true })
+            const tmp = `${MASK_PATH}.${process.pid}.tmp`
+            writeFileSync(tmp, JSON.stringify({ words, checkpointDrop: drop }, null, 2), 'utf8')
+            renameSync(tmp, MASK_PATH)
+            maskCache = { ...maskCache, mtime: -1 }
+            const mask = readMask()
+            log('info', `词表已更新：${mask.words.length} 个词，下一轮生效`)
+            return sendJson(res, 200, { ok: true, words: mask.words, checkpointDrop: mask.drop })
+          } catch (error) {
+            return sendJson(res, 400, { error: String(error?.message ?? error) })
+          }
+        },
+      }), 'think-guard: mask route')
+
+      web.effect(() => web.webServer.register({
+        kind: 'exact',
+        path: '/think-guard/cleanup',
+        handler: async (req, res) => {
+          if (req.method === 'GET') {
+            return sendJson(res, 200, { pending: [...cleanupPending.values()] })
+          }
+          if (req.method !== 'POST') return sendJson(res, 405, { error: 'method not allowed' })
+          try {
+            const body = JSON.parse(await readBody(req))
+            const state = readCleanupState()
+            const handled = new Set(state.handled ?? [])
+            if (body?.sessionId) {
+              const rec = cleanupPending.get(String(body.sessionId))
+              if (rec?.compactionId) handled.add(rec.compactionId)
+              cleanupPending.delete(String(body.sessionId))
+            } else {
+              for (const rec of cleanupPending.values()) if (rec.compactionId) handled.add(rec.compactionId)
+              cleanupPending.clear()
+            }
+            writeCleanupState({ handled: [...handled].slice(-50), pending: [...cleanupPending.values()] })
+            return sendJson(res, 200, { ok: true })
+          } catch (error) {
+            return sendJson(res, 400, { error: String(error?.message ?? error) })
+          }
+        },
+      }), 'think-guard: cleanup route')
+
+      log('info', '界面接口已注册：/think-guard/mask · /think-guard/cleanup')
+    })
+  } catch (error) {
+    log('warn', `界面接口注册失败（面板不可用）: ${String(error)}`)
   }
 
   if (typeof ctx.on !== 'function') {
@@ -419,14 +687,28 @@ export function apply(ctx, config = {}) {
         try {
           // 登记 Agent（流式期间的中断要靠它 followup / cancel）
           const sid = payload?.agent?.session?.id
-          if (typeof sid === 'string' && sid) agents.set(sid, payload.agent)
+          if (typeof sid === 'string' && sid) {
+            agents.set(sid, payload.agent)
+            // 每轮都把清洗器挂到 session 上（幂等）；真正生效点在 buildRequest。
+            installCleaner(payload.agent, payload?.turn)
+          }
 
           if (!decision || decision.kind !== 'enter') return decision
-          if (!inScope(sid)) return decision
-          if (payload?.signal?.aborted) return decision
           if (!Array.isArray(decision.messages) || decision.messages.length === 0) return decision
 
           let messages = decision.messages
+
+          // ── 压缩检测：出现没见过的检查点 → 记一条待清创 ──────────
+          // 只落到界面（/think-guard/cleanup），不写任何 session 事件。
+          try {
+            const cp = messages.find?.((m) => m?.source?.kind === 'compact-checkpoint')
+            const cid = cp?.source?.compactionId
+            if (typeof cid === 'string' && cid) markCompacted(String(payload?.agent?.session?.id ?? ''), cid)
+          } catch {}
+
+          // ── 以下护栏只对角色会话生效；清洗 / 压缩检测上面已全局跑过 ──
+          if (!inScope(sid)) return decision
+          if (payload?.signal?.aborted) return decision
 
           // ── 判定上一轮是否出事 ──────────────────────────────
           // decision.messages 只有「本轮新输入」；上一轮的 assistant 在表面派生里。
@@ -468,34 +750,7 @@ export function apply(ctx, config = {}) {
               trigger = `rotation(short=${rotation.shortShare.toFixed(2)},top=${rotation.topShare.toFixed(2)},seg=${rotation.segments})`
           }
 
-          // ── 第四道：宾语缺失（裸开工声明）──────────────────────
-          // 比复读更早的信号：先丢宾语，后丢产出，最后才文本重复。
-          let bareHit = null
-          if (bareGuard) {
-            const bare = []
-            const full = []
-            for (const msg of recentAssistants) {
-              const blocks = Array.isArray(msg?.content) ? msg.content : []
-              for (const b of blocks) {
-                if (b?.type !== 'reasoning' || typeof b.text !== 'string') continue
-                const r = scanBareDeclarations(b.text)
-                bare.push(...r.bare)
-                full.push(...r.full)
-              }
-            }
-            const total = bare.length + full.length
-            if (bare.length >= bareMinCount && bare.length >= total * bareShareMin) {
-              const bsid = String(payload?.agent?.session?.id ?? '')
-              const turnNow = Number(payload?.turn ?? 0)
-              const prev = bareLastTurn.get(bsid)
-              if (prev === undefined || turnNow - prev >= bareCooldownTurns) {
-                bareHit = { bare: bare.length, full: full.length }
-                bareLastTurn.set(bsid, turnNow)
-              }
-            }
-          }
-
-          // ── 第五道：僵局识别（只对白名单会话；默认只观测，不注入）──
+          // ── 第五道：僵局识别（默认只观测，不注入）──
           let stuckHit = null
           if (failGuard) {
             const fsid = String(payload?.agent?.session?.id ?? '')
@@ -535,17 +790,13 @@ export function apply(ctx, config = {}) {
           }
 
           // ── 触发时拉一把：本轮用户消息前加一句提醒 ──────────────
-          // 优先级：宾语缺失 > 空输出 > 复读。
-          // 宾语缺失是最早也最便宜的一档：只补一句话，不动历史、不打断生成。
+          // 优先级：空输出 / 复读 / 僵局（宾语提醒已删除）。
           let reminded = false
           let reason = null
           let injectText = null
           if (stuckHit && !failGuardObserveOnly) {
             reason = `僵局(失败${stuckHit.errors}/催促${stuckHit.retries})`
             injectText = reminderStuck
-          } else if (bareHit) {
-            reason = `宾语缺失(裸${bareHit.bare}/共${bareHit.bare + bareHit.full})`
-            injectText = reminderBare
           } else if (trigger === 'empty') {
             // 上一轮的空输出如果已经被 tryEmptyFix 自动补过，这里就不再补第二遍。
             const esid = String(payload?.agent?.session?.id ?? '')
@@ -632,7 +883,7 @@ export function apply(ctx, config = {}) {
     )
     log(
       'info',
-      `兜底已注册（连续 >= ${guardMinRun} 行准备句 / 整轮空输出 / 裸开工声明 >= ${bareMinCount} 且占比 >= ${(bareShareMin * 100).toFixed(0)}%；历史折叠 ${collapseHistory ? '开' : '关'}；宾语守卫 ${bareGuard ? '开' : '关'}）`,
+      `兜底已注册（连续 >= ${guardMinRun} 行准备句 / 整轮空输出 / 掐断 ${interruptOnLoop ? `开（${interruptMinRun} 行 / 单行 ${interruptInlineMin} 个，${interruptFollowup ? '补一句' : '不补话'}）` : '关'}；历史折叠 ${collapseHistory ? '开' : '关'}；宾语提醒 已删除）`,
     )
   } catch (error) {
     log('error', `注册 agent/pre-step 失败: ${String(error)}`)
@@ -750,7 +1001,7 @@ export function apply(ctx, config = {}) {
           inline = (st.pending.match(/好\s*[。，、]/g) ?? []).length
         }
 
-        if (run < interruptMinRun && !rotation && inline < 20) return
+        if (run < interruptMinRun && !rotation && inline < interruptInlineMin) return
 
         const kind =
           run >= interruptMinRun
@@ -782,26 +1033,31 @@ export function apply(ctx, config = {}) {
 
         lastInterrupt.set(sid, now)
         st.stopped = true
-        try {
-          agent.followup({
-            // 落成 user/message 时必须带齐 role 和 id：
-            // 缺 role → 上游反序列化 400；缺 id → 本地加载时报
-            // "session event at seq N lacks an identified message"。两个都实测踩过。
-            role: 'user',
-            id: randomUUID(),
-            content: [{ type: 'text', text: interruptMessage }],
-            // 非 'user' 的 kind：这条是守卫自己说的话，不该被渲染成用户输入的正文。
-            source: { kind: 'think-guard' },
-          })
-        } catch (error) {
-          log('error', `followup 失败: ${String(error)}`)
+        if (interruptFollowup) {
+          try {
+            agent.followup({
+              // 落成 user/message 时必须带齐 role 和 id：
+              // 缺 role → 上游反序列化 400；缺 id → 本地加载时报
+              // "session event at seq N lacks an identified message"。两个都实测踩过。
+              role: 'user',
+              id: randomUUID(),
+              content: [{ type: 'text', text: interruptMessage }],
+              // 非 'user' 的 kind：这条是守卫自己说的话，不该被渲染成用户输入的正文。
+              source: { kind: 'think-guard' },
+            })
+          } catch (error) {
+            log('error', `followup 失败: ${String(error)}`)
+          }
         }
         try {
           agent.cancel({ kind: 'hook', reason: 'think-guard: reasoning repetition' }, { keepInbox: true })
         } catch (error) {
           log('error', `cancel 失败: ${String(error)}`)
         }
-        log('info', `已中断 turn ${frame.turn ?? '?'} step ${frame.step ?? '?'}，并排入续写提醒`)
+        log(
+          'info',
+          `已中断 turn ${frame.turn ?? '?'} step ${frame.step ?? '?'}${interruptFollowup ? '，并排入续写提醒' : '，不追加提醒'}`,
+        )
       } catch (error) {
         try {
           ctx.logger?.warn?.(`think-guard: 流式检测失败（已跳过）: ${String(error)}`)
@@ -820,5 +1076,8 @@ export function apply(ctx, config = {}) {
 }
 
 // 供离线脚本 / 单元测试复用同一套判据，保证「清理脚本」和「运行时守卫」用一把尺子。
-export { scanBareDeclarations, scanStuck }
+export { scanStuck }
 
+
+// 供离线测试使用（宿主加载时忽略多余导出）
+export { cleanMessages, cleanThinking, readMask, MASK_PATH }
